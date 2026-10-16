@@ -1,0 +1,16 @@
+{
+  "name": "mic-studio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monitor your microphone live in your earphones, and record it, right in the browser.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}
