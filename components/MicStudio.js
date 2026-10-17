@@ -11,6 +11,7 @@ export default function MicStudio() {
   const [inputId, setInputId] = useState('');
   const [outputId, setOutputId] = useState('');
   const [volume, setVolume] = useState(1);
+  const [micBoost, setMicBoost] = useState(1);
   const [hear, setHear] = useState(true);
   const [echo, setEcho] = useState(false);
   const [noise, setNoise] = useState(false);
@@ -40,6 +41,7 @@ export default function MicStudio() {
   const musicToRecRef = useRef(null);
   const streamRef = useRef(null);
   const gainRef = useRef(null);
+  const micGainRef = useRef(null);
   const recDestRef = useRef(null);
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -160,6 +162,7 @@ export default function MicStudio() {
     streamRef.current = null;
     ctxRef.current = null;
     gainRef.current = null;
+    micGainRef.current = null;
     recDestRef.current = null;
     if (meterRef.current) meterRef.current.style.width = '0%';
     musicGainRef.current = null;
@@ -210,10 +213,22 @@ export default function MicStudio() {
         analyser.fftSize = 1024;
         const recDest = ctx.createMediaStreamDestination();
 
-        source.connect(monitor);
+        // Mic volume boosts the voice everywhere; the limiter keeps loud peaks from clipping.
+        const micGain = ctx.createGain();
+        micGain.gain.value = micBoost;
+        const limiter = ctx.createDynamicsCompressor();
+        limiter.threshold.value = -3;
+        limiter.knee.value = 0;
+        limiter.ratio.value = 20;
+        limiter.attack.value = 0.003;
+        limiter.release.value = 0.1;
+        source.connect(micGain).connect(limiter);
+
+        limiter.connect(monitor);
         monitor.connect(ctx.destination); // -> your earphones
-        source.connect(analyser); // -> level meter
-        source.connect(recDest); // -> recorder (raw mic, not affected by volume)
+        limiter.connect(analyser); // -> level meter
+        limiter.connect(recDest); // -> recorder (mic volume applies, earphone volume doesn't)
+        micGainRef.current = micGain;
 
         const musicGain = ctx.createGain();
         const trackToEar = ctx.createGain();
@@ -256,7 +271,7 @@ export default function MicStudio() {
         else setError(e.message || 'Could not start the microphone.');
       }
     },
-    [inputId, outputId, echo, noise, agc, hear, volume, musicVolume, mixMusic, guideOn, refreshDevices]
+    [inputId, outputId, echo, noise, agc, hear, volume, micBoost, musicVolume, mixMusic, guideOn, refreshDevices]
   );
 
   const toggleMic = () => (live ? stopMic() : startMic());
@@ -278,6 +293,11 @@ export default function MicStudio() {
         setError('Could not switch output: ' + e.message);
       }
     }
+  };
+
+  const onMicBoost = (v) => {
+    setMicBoost(v);
+    if (micGainRef.current) micGainRef.current.gain.value = v;
   };
 
   const onVolume = (v) => {
@@ -487,6 +507,19 @@ export default function MicStudio() {
         {!canPickOutput && (
           <small>Your browser can&apos;t choose an output device. Set it in your system sound settings (or use Chrome/Edge).</small>
         )}
+      </label>
+
+      <label className="field">
+        <span>Mic volume: {Math.round(micBoost * 100)}%</span>
+        <input
+          type="range"
+          min="0"
+          max="6"
+          step="0.1"
+          value={micBoost}
+          onChange={(e) => onMicBoost(parseFloat(e.target.value))}
+        />
+        <small>Boosts your voice in the recording and in your earphones. Aim for the meter to reach yellow when you sing loudly.</small>
       </label>
 
       <label className="field">
