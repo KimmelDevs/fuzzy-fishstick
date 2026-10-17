@@ -25,11 +25,18 @@ export default function MicStudio() {
   const [musicPlaying, setMusicPlaying] = useState(false);
   const [musicWithRec, setMusicWithRec] = useState(true);
   const [mixMusic, setMixMusic] = useState(true);
+  const [guideName, setGuideName] = useState('');
+  const [useGuide, setUseGuide] = useState(true);
+  const guideOn = useGuide && !!guideName;
 
   const ctxRef = useRef(null);
   const trackRef = useRef(null); // decoded AudioBuffer of the backing track
+  const guideRef = useRef(null); // decoded AudioBuffer of the guide (e.g. the song with vocals)
   const musicSrcRef = useRef(null);
+  const guideSrcRef = useRef(null);
   const musicGainRef = useRef(null);
+  const trackToEarRef = useRef(null);
+  const guideGainRef = useRef(null);
   const musicToRecRef = useRef(null);
   const streamRef = useRef(null);
   const gainRef = useRef(null);
@@ -57,13 +64,20 @@ export default function MicStudio() {
     return () => navigator.mediaDevices?.removeEventListener('devicechange', refreshDevices);
   }, [refreshDevices]);
 
-  const loadTrack = useCallback(async (getData, name) => {
+  // kind is 'track' (what gets recorded) or 'guide' (what you hear instead, if set).
+  const loadAudio = useCallback(async (kind, getData, name) => {
     setTrackLoading(true);
     setError('');
     const ctx = new AudioContext();
     try {
-      trackRef.current = await ctx.decodeAudioData(await getData());
-      setTrackName(name);
+      const buffer = await ctx.decodeAudioData(await getData());
+      if (kind === 'guide') {
+        guideRef.current = buffer;
+        setGuideName(name);
+      } else {
+        trackRef.current = buffer;
+        setTrackName(name);
+      }
     } catch {
       setError(`Could not load "${name}" as audio.`);
     } finally {
@@ -72,22 +86,31 @@ export default function MicStudio() {
     }
   }, []);
 
-  // Start with the bundled instrumental so it's ready to sing over.
+  // Start with the bundled song: hear the full version, record over the instrumental.
   useEffect(() => {
-    loadTrack(
-      () => fetch('/tracks/heart-in-bloom-instrumental.mp3').then((r) => r.arrayBuffer()),
-      'Heart In Bloom (Instrumental)'
-    );
-  }, [loadTrack]);
+    const get = (url) => () => fetch(url).then((r) => r.arrayBuffer());
+    loadAudio('track', get('/tracks/heart-in-bloom-instrumental.mp3'), 'Heart In Bloom (Instrumental)');
+    loadAudio('guide', get('/tracks/heart-in-bloom.mp3'), 'Heart In Bloom');
+  }, [loadAudio]);
+
+  // Earphones get either the guide or the backing track; the recorder always gets the backing track.
+  const applyMusicGains = (vol, guideOn) => {
+    if (musicGainRef.current) musicGainRef.current.gain.value = vol;
+    if (trackToEarRef.current) trackToEarRef.current.gain.value = guideOn ? 0 : 1;
+    if (guideGainRef.current) guideGainRef.current.gain.value = guideOn ? vol : 0;
+  };
 
   const stopMusic = useCallback(() => {
-    const src = musicSrcRef.current;
+    const srcs = [musicSrcRef.current, guideSrcRef.current];
     musicSrcRef.current = null; // mark as a manual stop so onended ignores it
-    try {
-      src?.stop();
-    } catch {
-      /* already stopped */
-    }
+    guideSrcRef.current = null;
+    srcs.forEach((src) => {
+      try {
+        src?.stop();
+      } catch {
+        /* already stopped */
+      }
+    });
     setMusicPlaying(false);
   }, []);
 
@@ -106,18 +129,25 @@ export default function MicStudio() {
     const ctx = ctxRef.current;
     if (!ctx || !trackRef.current) return;
     stopMusic();
+    const at = ctx.currentTime + 0.05; // start both versions on the same sample
     const src = ctx.createBufferSource();
     src.buffer = trackRef.current;
     src.connect(musicGainRef.current);
     src.onended = () => {
       if (musicSrcRef.current !== src) return;
       // The song finished on its own: end the take with it.
-      musicSrcRef.current = null;
-      setMusicPlaying(false);
+      stopMusic();
       stopRecording();
     };
-    src.start();
+    src.start(at);
     musicSrcRef.current = src;
+    if (guideRef.current) {
+      const guide = ctx.createBufferSource();
+      guide.buffer = guideRef.current;
+      guide.connect(guideGainRef.current);
+      guide.start(at);
+      guideSrcRef.current = guide;
+    }
     setMusicPlaying(true);
   }, [stopMusic, stopRecording]);
 
@@ -133,6 +163,8 @@ export default function MicStudio() {
     recDestRef.current = null;
     if (meterRef.current) meterRef.current.style.width = '0%';
     musicGainRef.current = null;
+    trackToEarRef.current = null;
+    guideGainRef.current = null;
     musicToRecRef.current = null;
     setLive(false);
   }, [stopRecording, stopMusic]);
@@ -184,13 +216,18 @@ export default function MicStudio() {
         source.connect(recDest); // -> recorder (raw mic, not affected by volume)
 
         const musicGain = ctx.createGain();
-        musicGain.gain.value = musicVolume;
+        const trackToEar = ctx.createGain();
+        const guideGain = ctx.createGain();
         const musicToRec = ctx.createGain();
         musicToRec.gain.value = mixMusic ? 1 : 0;
-        musicGain.connect(ctx.destination); // backing track -> your earphones
-        musicGain.connect(musicToRec).connect(recDest); // -> recorder, if mixing it in
+        musicGain.connect(trackToEar).connect(ctx.destination); // backing track -> your earphones (unless the guide is on)
+        musicGain.connect(musicToRec).connect(recDest); // backing track -> recorder, if mixing it in
+        guideGain.connect(ctx.destination); // guide -> your earphones only, never recorded
         musicGainRef.current = musicGain;
+        trackToEarRef.current = trackToEar;
+        guideGainRef.current = guideGain;
         musicToRecRef.current = musicToRec;
+        applyMusicGains(musicVolume, guideOn);
 
         ctxRef.current = ctx;
         streamRef.current = stream;
@@ -219,7 +256,7 @@ export default function MicStudio() {
         else setError(e.message || 'Could not start the microphone.');
       }
     },
-    [inputId, outputId, echo, noise, agc, hear, volume, musicVolume, mixMusic, refreshDevices]
+    [inputId, outputId, echo, noise, agc, hear, volume, musicVolume, mixMusic, guideOn, refreshDevices]
   );
 
   const toggleMic = () => (live ? stopMic() : startMic());
@@ -253,20 +290,25 @@ export default function MicStudio() {
     if (gainRef.current) gainRef.current.gain.value = h ? volume : 0;
   };
 
-  const onMusicVolume = (v) => {
-    setMusicVolume(v);
-    if (musicGainRef.current) musicGainRef.current.gain.value = v;
-  };
+  // Keep the live mix in step with the controls (and with the guide finishing loading).
+  useEffect(() => {
+    applyMusicGains(musicVolume, guideOn);
+  }, [musicVolume, guideOn]);
 
   const onMixMusic = (m) => {
     setMixMusic(m);
     if (musicToRecRef.current) musicToRecRef.current.gain.value = m ? 1 : 0;
   };
 
-  const onPickTrack = (file) => {
+  const onPickAudio = (kind, file) => {
     if (!file) return;
     stopMusic();
-    loadTrack(() => file.arrayBuffer(), file.name.replace(/\.[^.]+$/, ''));
+    if (kind === 'track') {
+      // A new backing song no longer matches the old guide.
+      guideRef.current = null;
+      setGuideName('');
+    }
+    loadAudio(kind, () => file.arrayBuffer(), file.name.replace(/\.[^.]+$/, ''));
   };
 
   const finishTake = () => {
@@ -351,8 +393,12 @@ export default function MicStudio() {
 
       <section className="track">
         <div className="track-head">
-          <span>🎵 Backing track</span>
+          <span>🎵 Backing track (recorded)</span>
           <strong>{trackLoading ? 'Loading…' : trackName || 'None'}</strong>
+        </div>
+        <div className="track-head">
+          <span>🎧 In my earphones</span>
+          <strong>{trackLoading ? 'Loading…' : (guideOn ? guideName : trackName) || 'None'}</strong>
         </div>
         <div className="row">
           <button
@@ -362,20 +408,34 @@ export default function MicStudio() {
           >
             {musicPlaying ? '■ Stop music' : '▶ Play music'}
           </button>
-          <label className={`btn ${recording || trackLoading ? 'disabled' : ''}`}>
-            Choose another song…
-            <input
-              type="file"
-              accept="audio/*"
-              hidden
-              disabled={recording || trackLoading}
-              onChange={(e) => {
-                onPickTrack(e.target.files[0]);
-                e.target.value = '';
-              }}
-            />
-          </label>
+          {[
+            ['track', 'Choose backing song…'],
+            ['guide', 'Choose earphone song…'],
+          ].map(([kind, text]) => (
+            <label key={kind} className={`btn ${recording || trackLoading ? 'disabled' : ''}`}>
+              {text}
+              <input
+                type="file"
+                accept="audio/*"
+                hidden
+                disabled={recording || trackLoading}
+                onChange={(e) => {
+                  onPickAudio(kind, e.target.files[0]);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+          ))}
         </div>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={useGuide}
+            disabled={!guideName}
+            onChange={(e) => setUseGuide(e.target.checked)}
+          />
+          Hear the full song (with vocals) in my earphones, but record only the backing track
+        </label>
         <label className="field">
           <span>Music volume: {Math.round(musicVolume * 100)}%</span>
           <input
@@ -384,7 +444,7 @@ export default function MicStudio() {
             max="1.5"
             step="0.05"
             value={musicVolume}
-            onChange={(e) => onMusicVolume(parseFloat(e.target.value))}
+            onChange={(e) => setMusicVolume(parseFloat(e.target.value))}
           />
         </label>
         <label className="check">
@@ -393,7 +453,7 @@ export default function MicStudio() {
         </label>
         <label className="check">
           <input type="checkbox" checked={mixMusic} onChange={(e) => onMixMusic(e.target.checked)} />
-          Put the music in the recording (off = just my voice)
+          Put the backing track in the recording (off = just my voice)
         </label>
         {!live && <small className="muted">Start the microphone to play the music.</small>}
       </section>
