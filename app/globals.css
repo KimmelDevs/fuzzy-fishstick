@@ -72,6 +72,15 @@ h2 { font-size: 1.05rem; margin: 8px 0 0; }
 .btn.stop { background: var(--stop); }
 .btn.rec { background: var(--rec); }
 .btn.danger { color: var(--rec); }
+label.btn.disabled { opacity: 0.45; cursor: not-allowed; }
+
+.track {
+  display: flex; flex-direction: column; gap: 10px;
+  border: 1px solid var(--border); border-radius: 12px; padding: 12px;
+}
+.track-head { display: flex; justify-content: space-between; gap: 10px; font-size: 0.9rem; }
+.track-head span { color: var(--muted); }
+.track-head strong { text-align: right; overflow-wrap: anywhere; }
 
 .meter { height: 10px; border-radius: 999px; background: var(--border); overflow: hidden; }
 .meter-bar {
