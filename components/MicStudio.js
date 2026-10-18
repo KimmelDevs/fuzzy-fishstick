@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { blobToWav, downloadUrl, extFor, fmtTime, pickMime, stamp } from '../lib/audio';
+import { blobToWav, downloadUrl, extFor, fmtTime, makeImpulse, pickMime, stamp } from '../lib/audio';
 
 export default function MicStudio() {
   const [live, setLive] = useState(false);
@@ -12,6 +12,8 @@ export default function MicStudio() {
   const [outputId, setOutputId] = useState('');
   const [volume, setVolume] = useState(1);
   const [micBoost, setMicBoost] = useState(1);
+  const [reverb, setReverb] = useState(63); // defaults match the StarMaker "Custom" effect
+  const [roomSize, setRoomSize] = useState(64);
   const [hear, setHear] = useState(true);
   const [echo, setEcho] = useState(false);
   const [noise, setNoise] = useState(false);
@@ -42,6 +44,8 @@ export default function MicStudio() {
   const streamRef = useRef(null);
   const gainRef = useRef(null);
   const micGainRef = useRef(null);
+  const reverbRef = useRef(null); // ConvolverNode
+  const reverbWetRef = useRef(null);
   const recDestRef = useRef(null);
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -163,6 +167,8 @@ export default function MicStudio() {
     ctxRef.current = null;
     gainRef.current = null;
     micGainRef.current = null;
+    reverbRef.current = null;
+    reverbWetRef.current = null;
     recDestRef.current = null;
     if (meterRef.current) meterRef.current.style.width = '0%';
     musicGainRef.current = null;
@@ -224,11 +230,22 @@ export default function MicStudio() {
         limiter.release.value = 0.1;
         source.connect(micGain).connect(limiter);
 
-        limiter.connect(monitor);
+        // Reverb: the dry voice plus a convolved "room" copy mixed in by the Reverb amount.
+        const voice = ctx.createGain();
+        const convolver = ctx.createConvolver();
+        convolver.buffer = makeImpulse(ctx, roomSize);
+        const wet = ctx.createGain();
+        wet.gain.value = reverb / 100;
+        limiter.connect(voice);
+        limiter.connect(convolver).connect(wet).connect(voice);
+
+        voice.connect(monitor);
         monitor.connect(ctx.destination); // -> your earphones
-        limiter.connect(analyser); // -> level meter
-        limiter.connect(recDest); // -> recorder (mic volume applies, earphone volume doesn't)
+        limiter.connect(analyser); // -> level meter (dry, so it shows your real level)
+        voice.connect(recDest); // -> recorder (mic volume and reverb apply, earphone volume doesn't)
         micGainRef.current = micGain;
+        reverbRef.current = convolver;
+        reverbWetRef.current = wet;
 
         const musicGain = ctx.createGain();
         const trackToEar = ctx.createGain();
@@ -271,7 +288,7 @@ export default function MicStudio() {
         else setError(e.message || 'Could not start the microphone.');
       }
     },
-    [inputId, outputId, echo, noise, agc, hear, volume, micBoost, musicVolume, mixMusic, guideOn, refreshDevices]
+    [inputId, outputId, echo, noise, agc, hear, volume, micBoost, reverb, roomSize, musicVolume, mixMusic, guideOn, refreshDevices]
   );
 
   const toggleMic = () => (live ? stopMic() : startMic());
@@ -293,6 +310,17 @@ export default function MicStudio() {
         setError('Could not switch output: ' + e.message);
       }
     }
+  };
+
+  const onReverb = (v) => {
+    setReverb(v);
+    if (reverbWetRef.current) reverbWetRef.current.gain.value = v / 100;
+  };
+
+  const onRoomSize = (v) => {
+    setRoomSize(v);
+    const conv = reverbRef.current;
+    if (conv) conv.buffer = makeImpulse(conv.context, v);
   };
 
   const onMicBoost = (v) => {
@@ -521,6 +549,40 @@ export default function MicStudio() {
         />
         <small>Boosts your voice in the recording and in your earphones. Aim for the meter to reach yellow when you sing loudly.</small>
       </label>
+
+      <section className="track">
+        <div className="track-head">
+          <span>✨ Voice effect: reverb</span>
+          <button
+            className="btn"
+            onClick={() => {
+              onReverb(63);
+              onRoomSize(64);
+            }}
+          >
+            StarMaker Custom
+          </button>
+        </div>
+        {[
+          ['Reverb', reverb, onReverb],
+          ['Room size', roomSize, onRoomSize],
+        ].map(([name, value, onChange]) => (
+          <label key={name} className="field">
+            <span>
+              {name}: {value}
+            </span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value={value}
+              onChange={(e) => onChange(parseInt(e.target.value, 10))}
+            />
+          </label>
+        ))}
+        <small className="muted">Set Reverb to 0 for your dry voice. You hear the effect live and it&apos;s saved in the recording.</small>
+      </section>
 
       <label className="field">
         <span>Volume in earphones: {Math.round(volume * 100)}%</span>
